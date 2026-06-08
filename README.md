@@ -4,7 +4,7 @@
 人口10万人以上の全国140都市以上に対応。**完全無料・ビルド不要**で動作します。
 
 🔗 **公開URL（設定後に更新）**  
-`https://あなたのGitHubユーザー名.github.io/living-cost-simulator/`
+`https://ono02-alt.github.io/LivingCostSimulator/`
 
 ---
 
