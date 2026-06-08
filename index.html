@@ -1,0 +1,896 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0" />
+  <title>生活費・住環境シミュレーター</title>
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <style>
+    *{box-sizing:border-box;margin:0;padding:0}
+    body{
+      background:linear-gradient(135deg,#0f172a 0%,#1a2744 50%,#0f172a 100%);
+      min-height:100vh;font-family:'Hiragino Sans','Noto Sans JP',sans-serif;
+      color:#e2e8f0;-webkit-font-smoothing:antialiased;
+    }
+    input[type=range]{-webkit-appearance:none;width:100%;height:6px;border-radius:4px;
+      background:rgba(255,255,255,0.15);outline:none}
+    input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:20px;height:20px;
+      border-radius:50%;cursor:pointer;border:2px solid #0f172a}
+    input[type=text]{-webkit-appearance:none}
+    ::-webkit-scrollbar{width:4px}
+    ::-webkit-scrollbar-track{background:transparent}
+    ::-webkit-scrollbar-thumb{background:rgba(255,255,255,0.2);border-radius:2px}
+    .fade-in{animation:fadeIn 0.35s ease}
+    @keyframes fadeIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
+  </style>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel">
+// ============================================================
+// ★ Gemini API 無料枠管理・有料化防止システム
+//   - Gemini 2.5 Flash: 無料枠 1,500 req/日（クレカ不要）
+//   - localStorageで当日使用回数を管理
+//   - 上限到達 → API呼び出し停止、ローカルデータで継続動作
+//   - 課金トリガー（billing有効化）は一切行わない設計
+// ============================================================
+const GEMINI_DAILY_LIMIT = 30; // 1,500req/日の安全マージン（2%以内）
+const GEMINI_MODEL = "gemini-2.5-flash-lite-preview-06-17"; // 無料枠最大モデル
+
+function getApiUsageToday() {
+  const today = new Date().toISOString().slice(0,10);
+  try {
+    const stored = JSON.parse(localStorage.getItem("gemini_usage") || "{}");
+    if (stored.date !== today) return 0;
+    return stored.count || 0;
+  } catch { return 0; }
+}
+function incrementApiUsage() {
+  const today = new Date().toISOString().slice(0,10);
+  try {
+    const stored = JSON.parse(localStorage.getItem("gemini_usage") || "{}");
+    const count = (stored.date === today ? (stored.count || 0) : 0) + 1;
+    localStorage.setItem("gemini_usage", JSON.stringify({ date: today, count }));
+    return count;
+  } catch { return 999; }
+}
+function canUseAPI(apiKey) {
+  if (!apiKey || apiKey.trim() === "") return false;
+  return getApiUsageToday() < GEMINI_DAILY_LIMIT;
+}
+
+// ============================================================
+// データ定義（公開統計・調査データに基づく概算値 2024-2025年）
+// ============================================================
+
+const CITIES = [
+  // 北海道
+  {id:"sapporo",name:"札幌市",pref:"北海道",pop:1960,region:"hokkaido"},
+  {id:"asahikawa",name:"旭川市",pref:"北海道",pop:325,region:"hokkaido"},
+  {id:"hakodate",name:"函館市",pref:"北海道",pop:247,region:"hokkaido"},
+  {id:"kushiro",name:"釧路市",pref:"北海道",pop:161,region:"hokkaido"},
+  {id:"obihiro",name:"帯広市",pref:"北海道",pop:165,region:"hokkaido"},
+  {id:"kitami",name:"北見市",pref:"北海道",pop:120,region:"hokkaido"},
+  // 東北
+  {id:"sendai",name:"仙台市",pref:"宮城県",pop:1096,region:"tohoku"},
+  {id:"morioka",name:"盛岡市",pref:"岩手県",pop:287,region:"tohoku"},
+  {id:"akita",name:"秋田市",pref:"秋田県",pop:303,region:"tohoku"},
+  {id:"yamagata",name:"山形市",pref:"山形県",pop:244,region:"tohoku"},
+  {id:"fukushima",name:"福島市",pref:"福島県",pop:278,region:"tohoku"},
+  {id:"koriyama",name:"郡山市",pref:"福島県",pop:320,region:"tohoku"},
+  {id:"iwaki",name:"いわき市",pref:"福島県",pop:325,region:"tohoku"},
+  {id:"aomori",name:"青森市",pref:"青森県",pop:278,region:"tohoku"},
+  {id:"hachinohe",name:"八戸市",pref:"青森県",pop:222,region:"tohoku"},
+  // 関東（東京特別区）
+  {id:"tokyo_shinjuku",name:"新宿区",pref:"東京都",pop:349,region:"kanto"},
+  {id:"tokyo_shibuya",name:"渋谷区",pref:"東京都",pop:237,region:"kanto"},
+  {id:"tokyo_setagaya",name:"世田谷区",pref:"東京都",pop:930,region:"kanto"},
+  {id:"tokyo_koto",name:"江東区",pref:"東京都",pop:530,region:"kanto"},
+  {id:"tokyo_edogawa",name:"江戸川区",pref:"東京都",pop:696,region:"kanto"},
+  {id:"tokyo_nerima",name:"練馬区",pref:"東京都",pop:749,region:"kanto"},
+  {id:"tokyo_itabashi",name:"板橋区",pref:"東京都",pop:574,region:"kanto"},
+  {id:"tokyo_adachi",name:"足立区",pref:"東京都",pop:693,region:"kanto"},
+  {id:"tokyo_sumida",name:"墨田区",pref:"東京都",pop:274,region:"kanto"},
+  {id:"tokyo_minato",name:"港区",pref:"東京都",pop:263,region:"kanto"},
+  {id:"tokyo_ota",name:"大田区",pref:"東京都",pop:748,region:"kanto"},
+  {id:"tokyo_suginami",name:"杉並区",pref:"東京都",pop:581,region:"kanto"},
+  {id:"tokyo_nakano",name:"中野区",pref:"東京都",pop:334,region:"kanto"},
+  // 関東（市）
+  {id:"yokohama",name:"横浜市",pref:"神奈川県",pop:3756,region:"kanto"},
+  {id:"kawasaki",name:"川崎市",pref:"神奈川県",pop:1545,region:"kanto"},
+  {id:"sagamihara",name:"相模原市",pref:"神奈川県",pop:724,region:"kanto"},
+  {id:"yokosuka",name:"横須賀市",pref:"神奈川県",pop:393,region:"kanto"},
+  {id:"fujisawa",name:"藤沢市",pref:"神奈川県",pop:437,region:"kanto"},
+  {id:"hiratsuka",name:"平塚市",pref:"神奈川県",pop:258,region:"kanto"},
+  {id:"atsugi",name:"厚木市",pref:"神奈川県",pop:225,region:"kanto"},
+  {id:"yamato",name:"大和市",pref:"神奈川県",pop:239,region:"kanto"},
+  {id:"odawara",name:"小田原市",pref:"神奈川県",pop:183,region:"kanto"},
+  {id:"saitama",name:"さいたま市",pref:"埼玉県",pop:1336,region:"kanto"},
+  {id:"kawagoe",name:"川越市",pref:"埼玉県",pop:352,region:"kanto"},
+  {id:"kawaguchi",name:"川口市",pref:"埼玉県",pop:609,region:"kanto"},
+  {id:"tokorozawa",name:"所沢市",pref:"埼玉県",pop:346,region:"kanto"},
+  {id:"kasukabe",name:"春日部市",pref:"埼玉県",pop:228,region:"kanto"},
+  {id:"koshigaya",name:"越谷市",pref:"埼玉県",pop:340,region:"kanto"},
+  {id:"souka",name:"草加市",pref:"埼玉県",pop:249,region:"kanto"},
+  {id:"ageo",name:"上尾市",pref:"埼玉県",pop:227,region:"kanto"},
+  {id:"kumagaya",name:"熊谷市",pref:"埼玉県",pop:196,region:"kanto"},
+  {id:"chiba",name:"千葉市",pref:"千葉県",pop:978,region:"kanto"},
+  {id:"funabashi",name:"船橋市",pref:"千葉県",pop:649,region:"kanto"},
+  {id:"matsudo",name:"松戸市",pref:"千葉県",pop:493,region:"kanto"},
+  {id:"ichikawa",name:"市川市",pref:"千葉県",pop:498,region:"kanto"},
+  {id:"kashiwa",name:"柏市",pref:"千葉県",pop:432,region:"kanto"},
+  {id:"urayasu",name:"浦安市",pref:"千葉県",pop:172,region:"kanto"},
+  {id:"narashino",name:"習志野市",pref:"千葉県",pop:175,region:"kanto"},
+  {id:"ichihara",name:"市原市",pref:"千葉県",pop:269,region:"kanto"},
+  {id:"yachiyo",name:"八千代市",pref:"千葉県",pop:198,region:"kanto"},
+  {id:"nagareyama",name:"流山市",pref:"千葉県",pop:212,region:"kanto"},
+  {id:"utsunomiya",name:"宇都宮市",pref:"栃木県",pop:516,region:"kanto"},
+  {id:"oyama",name:"小山市",pref:"栃木県",pop:167,region:"kanto"},
+  {id:"maebashi",name:"前橋市",pref:"群馬県",pop:335,region:"kanto"},
+  {id:"takasaki",name:"高崎市",pref:"群馬県",pop:369,region:"kanto"},
+  {id:"ota_gunma",name:"太田市",pref:"群馬県",pop:220,region:"kanto"},
+  {id:"mito",name:"水戸市",pref:"茨城県",pop:270,region:"kanto"},
+  {id:"tsukuba",name:"つくば市",pref:"茨城県",pop:249,region:"kanto"},
+  {id:"hitachi",name:"日立市",pref:"茨城県",pop:177,region:"kanto"},
+  // 甲信越・北陸
+  {id:"niigata",name:"新潟市",pref:"新潟県",pop:793,region:"chubu"},
+  {id:"nagano",name:"長野市",pref:"長野県",pop:372,region:"chubu"},
+  {id:"matsumoto",name:"松本市",pref:"長野県",pop:241,region:"chubu"},
+  {id:"kofu",name:"甲府市",pref:"山梨県",pop:188,region:"chubu"},
+  {id:"kanazawa",name:"金沢市",pref:"石川県",pop:456,region:"chubu"},
+  {id:"fukui",name:"福井市",pref:"福井県",pop:263,region:"chubu"},
+  {id:"toyama",name:"富山市",pref:"富山県",pop:417,region:"chubu"},
+  // 東海
+  {id:"nagoya",name:"名古屋市",pref:"愛知県",pop:2330,region:"chubu"},
+  {id:"toyota",name:"豊田市",pref:"愛知県",pop:425,region:"chubu"},
+  {id:"okazaki",name:"岡崎市",pref:"愛知県",pop:395,region:"chubu"},
+  {id:"ichinomiya",name:"一宮市",pref:"愛知県",pop:384,region:"chubu"},
+  {id:"kasugai",name:"春日井市",pref:"愛知県",pop:311,region:"chubu"},
+  {id:"toyohashi",name:"豊橋市",pref:"愛知県",pop:372,region:"chubu"},
+  {id:"anjo",name:"安城市",pref:"愛知県",pop:192,region:"chubu"},
+  {id:"hamamatsu",name:"浜松市",pref:"静岡県",pop:790,region:"chubu"},
+  {id:"shizuoka",name:"静岡市",pref:"静岡県",pop:700,region:"chubu"},
+  {id:"numazu",name:"沼津市",pref:"静岡県",pop:191,region:"chubu"},
+  {id:"fuji",name:"富士市",pref:"静岡県",pop:248,region:"chubu"},
+  {id:"mishima",name:"三島市",pref:"静岡県",pop:111,region:"chubu"},
+  {id:"gifu",name:"岐阜市",pref:"岐阜県",pop:403,region:"chubu"},
+  {id:"tsu",name:"津市",pref:"三重県",pop:277,region:"chubu"},
+  {id:"yokkaichi",name:"四日市市",pref:"三重県",pop:310,region:"chubu"},
+  // 関西
+  {id:"osaka_city",name:"大阪市",pref:"大阪府",pop:2756,region:"kinki"},
+  {id:"sakai",name:"堺市",pref:"大阪府",pop:831,region:"kinki"},
+  {id:"higashiosaka",name:"東大阪市",pref:"大阪府",pop:491,region:"kinki"},
+  {id:"toyonaka",name:"豊中市",pref:"大阪府",pop:405,region:"kinki"},
+  {id:"suita",name:"吹田市",pref:"大阪府",pop:396,region:"kinki"},
+  {id:"hirakata",name:"枚方市",pref:"大阪府",pop:399,region:"kinki"},
+  {id:"takatsuki",name:"高槻市",pref:"大阪府",pop:350,region:"kinki"},
+  {id:"ibaraki_osaka",name:"茨木市",pref:"大阪府",pop:289,region:"kinki"},
+  {id:"kyoto",name:"京都市",pref:"京都府",pop:1466,region:"kinki"},
+  {id:"kobe",name:"神戸市",pref:"兵庫県",pop:1526,region:"kinki"},
+  {id:"himeji",name:"姫路市",pref:"兵庫県",pop:529,region:"kinki"},
+  {id:"amagasaki",name:"尼崎市",pref:"兵庫県",pop:454,region:"kinki"},
+  {id:"nishinomiya",name:"西宮市",pref:"兵庫県",pop:490,region:"kinki"},
+  {id:"akashi",name:"明石市",pref:"兵庫県",pop:302,region:"kinki"},
+  {id:"nara",name:"奈良市",pref:"奈良県",pop:352,region:"kinki"},
+  {id:"wakayama",name:"和歌山市",pref:"和歌山県",pop:358,region:"kinki"},
+  {id:"otsu",name:"大津市",pref:"滋賀県",pop:341,region:"kinki"},
+  // 中国
+  {id:"hiroshima",name:"広島市",pref:"広島県",pop:1201,region:"chugoku"},
+  {id:"fukuyama",name:"福山市",pref:"広島県",pop:467,region:"chugoku"},
+  {id:"kure",name:"呉市",pref:"広島県",pop:218,region:"chugoku"},
+  {id:"okayama",name:"岡山市",pref:"岡山県",pop:724,region:"chugoku"},
+  {id:"kurashiki",name:"倉敷市",pref:"岡山県",pop:476,region:"chugoku"},
+  {id:"matsue",name:"松江市",pref:"島根県",pop:204,region:"chugoku"},
+  {id:"yamaguchi",name:"山口市",pref:"山口県",pop:194,region:"chugoku"},
+  {id:"shimonoseki",name:"下関市",pref:"山口県",pop:258,region:"chugoku"},
+  // 四国
+  {id:"takamatsu",name:"高松市",pref:"香川県",pop:419,region:"shikoku"},
+  {id:"matsuyama",name:"松山市",pref:"愛媛県",pop:511,region:"shikoku"},
+  {id:"kochi",name:"高知市",pref:"高知県",pop:326,region:"shikoku"},
+  {id:"tokushima",name:"徳島市",pref:"徳島県",pop:258,region:"shikoku"},
+  // 九州
+  {id:"fukuoka",name:"福岡市",pref:"福岡県",pop:1627,region:"kyushu"},
+  {id:"kitakyushu",name:"北九州市",pref:"福岡県",pop:934,region:"kyushu"},
+  {id:"kurume",name:"久留米市",pref:"福岡県",pop:305,region:"kyushu"},
+  {id:"saga",name:"佐賀市",pref:"佐賀県",pop:233,region:"kyushu"},
+  {id:"nagasaki",name:"長崎市",pref:"長崎県",pop:413,region:"kyushu"},
+  {id:"sasebo",name:"佐世保市",pref:"長崎県",pop:243,region:"kyushu"},
+  {id:"kumamoto",name:"熊本市",pref:"熊本県",pop:742,region:"kyushu"},
+  {id:"oita",name:"大分市",pref:"大分県",pop:479,region:"kyushu"},
+  {id:"miyazaki",name:"宮崎市",pref:"宮崎県",pop:396,region:"kyushu"},
+  {id:"kagoshima",name:"鹿児島市",pref:"鹿児島県",pop:593,region:"kyushu"},
+  // 沖縄
+  {id:"naha",name:"那覇市",pref:"沖縄県",pop:318,region:"okinawa"},
+  {id:"okinawa_city",name:"沖縄市",pref:"沖縄県",pop:143,region:"okinawa"},
+  {id:"urasoe",name:"浦添市",pref:"沖縄県",pop:115,region:"okinawa"},
+];
+
+// 電力プラン（キャッシュバック除く通常料金体系のみ）
+const ELECTRIC_PLANS = {
+  hokkaido:[
+    {company:"北海道電力",plan:"従量電灯B",base:748,meter:3,tiers:[{lim:120,p:26.62},{lim:300,p:33.34},{lim:Infinity,p:41.66}],cashback:null},
+    {company:"Looop電気",plan:"おうちプラン（北海道）",base:0,meter:0,tiers:[{lim:Infinity,p:35.20}],cashback:null,note:"基本料0円・完全従量制"},
+    {company:"auでんき",plan:"スマートバリュー（北海道）",base:748,meter:3,tiers:[{lim:120,p:26.82},{lim:300,p:33.54},{lim:Infinity,p:41.86}],cashback:"au利用者はPontaポイント還元あり（通常料金に変更なし）"},
+  ],
+  tohoku:[
+    {company:"東北電力",plan:"従量電灯B",base:748,meter:3,tiers:[{lim:120,p:25.34},{lim:300,p:31.65},{lim:Infinity,p:37.93}],cashback:null},
+    {company:"東北電力",plan:"よりそうeねっとバリュー",base:748,meter:3,tiers:[{lim:120,p:24.07},{lim:300,p:30.07},{lim:Infinity,p:36.02}],cashback:null,note:"Web手続き専用プラン"},
+    {company:"ENEOSでんき",plan:"スタンダードS（東北）",base:748,meter:3,tiers:[{lim:120,p:24.90},{lim:300,p:31.12},{lim:Infinity,p:37.20}],cashback:"ENEOSカード利用でポイント還元（料金体系に変更なし）"},
+  ],
+  kanto:[
+    {company:"東京電力エナジーパートナー",plan:"従量電灯B",base:748,meter:3,tiers:[{lim:120,p:29.80},{lim:300,p:36.40},{lim:Infinity,p:40.49}],cashback:null},
+    {company:"Looopでんき",plan:"おうちプラン（関東）",base:0,meter:0,tiers:[{lim:Infinity,p:35.65}],cashback:null,note:"基本料0円・完全従量制"},
+    {company:"東京ガスの電気",plan:"ずっとも電気1",base:748,meter:3,tiers:[{lim:120,p:29.22},{lim:300,p:35.67},{lim:Infinity,p:39.70}],cashback:null},
+    {company:"ENEOSでんき",plan:"スタンダードS（関東）",base:748,meter:3,tiers:[{lim:120,p:29.22},{lim:300,p:35.67},{lim:Infinity,p:39.70}],cashback:"ENEOSカード利用でポイント還元（料金体系に変更なし）"},
+    {company:"auでんき",plan:"スマートバリュー（関東）",base:748,meter:3,tiers:[{lim:120,p:29.80},{lim:300,p:36.40},{lim:Infinity,p:40.49}],cashback:"au利用者はPontaポイント還元あり（通常料金に変更なし）"},
+  ],
+  chubu:[
+    {company:"中部電力ミライズ",plan:"従量電灯B",base:748,meter:3,tiers:[{lim:120,p:20.54},{lim:300,p:25.80},{lim:Infinity,p:30.02}],cashback:null},
+    {company:"Looopでんき",plan:"おうちプラン（中部）",base:0,meter:0,tiers:[{lim:Infinity,p:31.74}],cashback:null,note:"基本料0円・完全従量制"},
+    {company:"東京ガスの電気",plan:"ずっとも電気1（中部）",base:748,meter:3,tiers:[{lim:120,p:20.14},{lim:300,p:25.28},{lim:Infinity,p:29.42}],cashback:null},
+  ],
+  kinki:[
+    {company:"関西電力",plan:"従量電灯A",base:748,meter:3,tiers:[{lim:120,p:20.32},{lim:300,p:25.61},{lim:Infinity,p:28.70}],cashback:null},
+    {company:"Looopでんき",plan:"おうちプラン（関西）",base:0,meter:0,tiers:[{lim:Infinity,p:28.50}],cashback:null,note:"基本料0円・完全従量制"},
+    {company:"大阪ガスの電気",plan:"ウィズ（スマート）",base:748,meter:3,tiers:[{lim:120,p:19.90},{lim:300,p:25.11},{lim:Infinity,p:28.12}],cashback:null},
+  ],
+  chugoku:[
+    {company:"中国電力",plan:"従量電灯A",base:748,meter:3,tiers:[{lim:120,p:20.32},{lim:300,p:26.43},{lim:Infinity,p:31.24}],cashback:null},
+    {company:"Looopでんき",plan:"おうちプラン（中国）",base:0,meter:0,tiers:[{lim:Infinity,p:32.50}],cashback:null,note:"基本料0円・完全従量制"},
+    {company:"ENEOSでんき",plan:"スタンダードS（中国）",base:748,meter:3,tiers:[{lim:120,p:19.91},{lim:300,p:25.90},{lim:Infinity,p:30.62}],cashback:"ENEOSカード利用でポイント還元（料金体系に変更なし）"},
+  ],
+  shikoku:[
+    {company:"四国電力",plan:"従量電灯A",base:748,meter:3,tiers:[{lim:120,p:20.32},{lim:300,p:25.45},{lim:Infinity,p:31.00}],cashback:null},
+    {company:"Looopでんき",plan:"おうちプラン（四国）",base:0,meter:0,tiers:[{lim:Infinity,p:32.00}],cashback:null,note:"基本料0円・完全従量制"},
+    {company:"ENEOSでんき",plan:"スタンダードS（四国）",base:748,meter:3,tiers:[{lim:120,p:19.91},{lim:300,p:24.94},{lim:Infinity,p:30.38}],cashback:"ENEOSカード利用でポイント還元（料金体系に変更なし）"},
+  ],
+  kyushu:[
+    {company:"九州電力",plan:"従量電灯B",base:748,meter:3,tiers:[{lim:120,p:17.47},{lim:300,p:23.49},{lim:Infinity,p:26.37}],cashback:null},
+    {company:"Looopでんき",plan:"おうちプラン（九州）",base:0,meter:0,tiers:[{lim:Infinity,p:26.40}],cashback:null,note:"基本料0円・完全従量制"},
+    {company:"ENEOSでんき",plan:"スタンダードS（九州）",base:748,meter:3,tiers:[{lim:120,p:17.12},{lim:300,p:23.02},{lim:Infinity,p:25.85}],cashback:"ENEOSカード利用でポイント還元（料金体系に変更なし）"},
+  ],
+  okinawa:[
+    {company:"沖縄電力",plan:"従量電灯",base:748,meter:3,tiers:[{lim:150,p:25.32},{lim:300,p:29.58},{lim:Infinity,p:33.84}],cashback:null},
+    {company:"Looopでんき",plan:"おうちプラン（沖縄）",base:0,meter:0,tiers:[{lim:Infinity,p:34.00}],cashback:null,note:"基本料0円・完全従量制"},
+  ],
+};
+
+// 水道料金（概算、円/月）
+const WATER_DB = {
+  sapporo:{wb:1080,wr:[{l:10,p:150},{l:20,p:198},{l:30,p:231},{l:Infinity,p:264}],sb:1430,sr:129},
+  asahikawa:{wb:1320,wr:[{l:10,p:170},{l:20,p:220},{l:30,p:260},{l:Infinity,p:310}],sb:880,sr:110},
+  hakodate:{wb:1320,wr:[{l:10,p:165},{l:20,p:215},{l:30,p:255},{l:Infinity,p:305}],sb:880,sr:110},
+  sendai:{wb:1320,wr:[{l:10,p:128},{l:20,p:165},{l:30,p:196},{l:Infinity,p:231}],sb:880,sr:120},
+  morioka:{wb:1540,wr:[{l:10,p:155},{l:20,p:200},{l:30,p:240},{l:Infinity,p:285}],sb:880,sr:115},
+  akita:{wb:1320,wr:[{l:10,p:148},{l:20,p:192},{l:30,p:228},{l:Infinity,p:270}],sb:880,sr:118},
+  tokyo_shinjuku:{wb:1848,wr:[{l:10,p:128},{l:20,p:163},{l:30,p:198},{l:Infinity,p:234}],sb:1210,sr:120},
+  tokyo_shibuya:{wb:1848,wr:[{l:10,p:128},{l:20,p:163},{l:30,p:198},{l:Infinity,p:234}],sb:1210,sr:120},
+  tokyo_setagaya:{wb:1848,wr:[{l:10,p:128},{l:20,p:163},{l:30,p:198},{l:Infinity,p:234}],sb:1210,sr:120},
+  tokyo_koto:{wb:1848,wr:[{l:10,p:128},{l:20,p:163},{l:30,p:198},{l:Infinity,p:234}],sb:1210,sr:120},
+  tokyo_edogawa:{wb:1848,wr:[{l:10,p:128},{l:20,p:163},{l:30,p:198},{l:Infinity,p:234}],sb:1210,sr:120},
+  tokyo_nerima:{wb:1848,wr:[{l:10,p:128},{l:20,p:163},{l:30,p:198},{l:Infinity,p:234}],sb:1210,sr:120},
+  tokyo_itabashi:{wb:1848,wr:[{l:10,p:128},{l:20,p:163},{l:30,p:198},{l:Infinity,p:234}],sb:1210,sr:120},
+  tokyo_adachi:{wb:1848,wr:[{l:10,p:128},{l:20,p:163},{l:30,p:198},{l:Infinity,p:234}],sb:1210,sr:120},
+  tokyo_sumida:{wb:1848,wr:[{l:10,p:128},{l:20,p:163},{l:30,p:198},{l:Infinity,p:234}],sb:1210,sr:120},
+  tokyo_minato:{wb:1848,wr:[{l:10,p:128},{l:20,p:163},{l:30,p:198},{l:Infinity,p:234}],sb:1210,sr:120},
+  tokyo_ota:{wb:1848,wr:[{l:10,p:128},{l:20,p:163},{l:30,p:198},{l:Infinity,p:234}],sb:1210,sr:120},
+  tokyo_suginami:{wb:1848,wr:[{l:10,p:128},{l:20,p:163},{l:30,p:198},{l:Infinity,p:234}],sb:1210,sr:120},
+  tokyo_nakano:{wb:1848,wr:[{l:10,p:128},{l:20,p:163},{l:30,p:198},{l:Infinity,p:234}],sb:1210,sr:120},
+  yokohama:{wb:1320,wr:[{l:10,p:142},{l:20,p:185},{l:30,p:218},{l:Infinity,p:261}],sb:880,sr:125},
+  kawasaki:{wb:1320,wr:[{l:10,p:140},{l:20,p:183},{l:30,p:215},{l:Infinity,p:258}],sb:880,sr:123},
+  sagamihara:{wb:1320,wr:[{l:10,p:138},{l:20,p:180},{l:30,p:212},{l:Infinity,p:255}],sb:880,sr:120},
+  saitama:{wb:1320,wr:[{l:10,p:130},{l:20,p:168},{l:30,p:200},{l:Infinity,p:238}],sb:880,sr:118},
+  chiba:{wb:1320,wr:[{l:10,p:135},{l:20,p:175},{l:30,p:208},{l:Infinity,p:248}],sb:880,sr:120},
+  nagoya:{wb:880,wr:[{l:10,p:123},{l:20,p:158},{l:30,p:188},{l:Infinity,p:218}],sb:660,sr:112},
+  hamamatsu:{wb:1320,wr:[{l:10,p:132},{l:20,p:171},{l:30,p:203},{l:Infinity,p:242}],sb:880,sr:118},
+  shizuoka:{wb:1320,wr:[{l:10,p:128},{l:20,p:165},{l:30,p:197},{l:Infinity,p:235}],sb:880,sr:116},
+  osaka_city:{wb:880,wr:[{l:10,p:120},{l:20,p:156},{l:30,p:186},{l:Infinity,p:215}],sb:660,sr:108},
+  sakai:{wb:1100,wr:[{l:10,p:125},{l:20,p:162},{l:30,p:193},{l:Infinity,p:228}],sb:770,sr:112},
+  kyoto:{wb:1320,wr:[{l:10,p:130},{l:20,p:168},{l:30,p:200},{l:Infinity,p:235}],sb:880,sr:116},
+  kobe:{wb:1320,wr:[{l:10,p:135},{l:20,p:175},{l:30,p:208},{l:Infinity,p:248}],sb:880,sr:120},
+  hiroshima:{wb:1320,wr:[{l:10,p:128},{l:20,p:165},{l:30,p:197},{l:Infinity,p:233}],sb:880,sr:118},
+  okayama:{wb:1320,wr:[{l:10,p:130},{l:20,p:168},{l:30,p:200},{l:Infinity,p:238}],sb:880,sr:118},
+  fukuoka:{wb:1320,wr:[{l:10,p:125},{l:20,p:162},{l:30,p:194},{l:Infinity,p:228}],sb:880,sr:115},
+  kumamoto:{wb:1320,wr:[{l:10,p:120},{l:20,p:155},{l:30,p:185},{l:Infinity,p:220}],sb:880,sr:112},
+  naha:{wb:1320,wr:[{l:10,p:145},{l:20,p:188},{l:30,p:224},{l:Infinity,p:267}],sb:880,sr:125},
+  _default:{wb:1320,wr:[{l:10,p:145},{l:20,p:188},{l:30,p:222},{l:Infinity,p:265}],sb:880,sr:120},
+};
+
+// 地域情報DB（公開統計ベース概算値）
+const CITY_INFO_DB = {
+  sapporo:{conv:92,safe:75,price:78,climate:"寒冷・積雪多（冬-10℃前後）",salary:330,welfare:72},
+  asahikawa:{conv:72,safe:78,price:72,climate:"内陸寒冷（冬-20℃も）",salary:300,welfare:68},
+  hakodate:{conv:70,safe:78,price:74,climate:"寒冷・海洋性",salary:295,welfare:65},
+  sendai:{conv:85,safe:80,price:82,climate:"やや寒冷・積雪あり",salary:340,welfare:68},
+  morioka:{conv:72,safe:82,price:75,climate:"内陸寒冷・積雪多",salary:305,welfare:62},
+  tokyo_shinjuku:{conv:99,safe:72,price:145,climate:"温暖（夏35℃超・冬0℃前後）",salary:530,welfare:55},
+  tokyo_shibuya:{conv:99,safe:78,price:148,climate:"温暖（夏35℃超・冬0℃前後）",salary:550,welfare:52},
+  tokyo_setagaya:{conv:95,safe:85,price:130,climate:"温暖（夏35℃超・冬0℃前後）",salary:515,welfare:58},
+  tokyo_koto:{conv:92,safe:80,price:118,climate:"温暖（夏35℃超・冬0℃前後）",salary:480,welfare:60},
+  tokyo_edogawa:{conv:88,safe:78,price:112,climate:"温暖（夏35℃超・冬0℃前後）",salary:450,welfare:62},
+  tokyo_nerima:{conv:88,safe:84,price:115,climate:"温暖（夏35℃超・冬0℃前後）",salary:460,welfare:60},
+  tokyo_itabashi:{conv:90,safe:78,price:112,climate:"温暖（夏35℃超・冬0℃前後）",salary:455,welfare:62},
+  tokyo_adachi:{conv:88,safe:72,price:105,climate:"温暖（夏35℃超・冬0℃前後）",salary:430,welfare:68},
+  tokyo_sumida:{conv:90,safe:75,price:115,climate:"温暖（夏35℃超・冬0℃前後）",salary:460,welfare:63},
+  tokyo_minato:{conv:99,safe:88,price:165,climate:"温暖（夏35℃超・冬0℃前後）",salary:680,welfare:45},
+  tokyo_ota:{conv:90,safe:80,price:118,climate:"温暖（夏35℃超・冬0℃前後）",salary:465,welfare:62},
+  tokyo_suginami:{conv:92,safe:84,price:122,climate:"温暖（夏35℃超・冬0℃前後）",salary:490,welfare:58},
+  tokyo_nakano:{conv:92,safe:80,price:118,climate:"温暖（夏35℃超・冬0℃前後）",salary:470,welfare:60},
+  yokohama:{conv:94,safe:83,price:118,climate:"温暖・海洋性（夏33℃・冬4℃）",salary:450,welfare:55},
+  kawasaki:{conv:93,safe:80,price:115,climate:"温暖・工業都市（夏34℃・冬4℃）",salary:440,welfare:57},
+  sagamihara:{conv:83,safe:83,price:105,climate:"内陸温暖（夏35℃・冬2℃）",salary:400,welfare:58},
+  saitama:{conv:88,safe:82,price:100,climate:"内陸温暖（夏37℃・冬0℃）",salary:410,welfare:60},
+  chiba:{conv:88,safe:82,price:105,climate:"温暖・海洋性（夏33℃・冬5℃）",salary:415,welfare:58},
+  nagoya:{conv:88,safe:82,price:95,climate:"温暖（夏37℃・冬4℃）",salary:400,welfare:62},
+  toyota:{conv:75,safe:84,price:88,climate:"内陸温暖（夏37℃・冬2℃）",salary:420,welfare:58},
+  hamamatsu:{conv:78,safe:82,price:87,climate:"温暖・晴天多（夏35℃・冬8℃）",salary:380,welfare:60},
+  shizuoka:{conv:78,safe:83,price:88,climate:"温暖（夏34℃・冬8℃）",salary:375,welfare:62},
+  osaka_city:{conv:95,safe:70,price:98,climate:"温暖（夏37℃・冬8℃）",salary:390,welfare:75},
+  sakai:{conv:82,safe:72,price:90,climate:"温暖（夏37℃・冬7℃）",salary:370,welfare:72},
+  kyoto:{conv:87,safe:83,price:105,climate:"盆地・夏酷暑（夏38℃・冬5℃）",salary:370,welfare:65},
+  kobe:{conv:88,safe:82,price:100,climate:"温暖・海洋性（夏34℃・冬7℃）",salary:380,welfare:66},
+  hiroshima:{conv:82,safe:82,price:90,climate:"温暖（夏34℃・冬7℃）",salary:360,welfare:63},
+  okayama:{conv:78,safe:82,price:88,climate:"温暖・晴天多（夏34℃・冬7℃）",salary:350,welfare:62},
+  fukuoka:{conv:88,safe:78,price:88,climate:"温暖（夏34℃・冬9℃）",salary:360,welfare:70},
+  kumamoto:{conv:80,safe:80,price:84,climate:"温暖（夏34℃・冬9℃）",salary:330,welfare:68},
+  kagoshima:{conv:75,safe:80,price:85,climate:"温暖・台風多（夏32℃・冬10℃）",salary:295,welfare:70},
+  naha:{conv:78,safe:80,price:95,climate:"亜熱帯（夏33℃・冬16℃・台風多）",salary:290,welfare:75},
+  _default:{conv:75,safe:80,price:85,climate:"温暖（四季あり）",salary:335,welfare:65},
+};
+
+// 賃貸相場DB（円/月・中央値概算）
+const RENT_DB = {
+  sapporo:{"1R":40000,"1K":45000,"1DK":52000,"1LDK":65000,"2LDK":82000,"3LDK":100000},
+  sendai:{"1R":40000,"1K":47000,"1DK":55000,"1LDK":68000,"2LDK":85000,"3LDK":105000},
+  morioka:{"1R":33000,"1K":38000,"1DK":45000,"1LDK":57000,"2LDK":72000,"3LDK":90000},
+  tokyo_shinjuku:{"1R":88000,"1K":103000,"1DK":128000,"1LDK":168000,"2LDK":245000,"3LDK":340000},
+  tokyo_shibuya:{"1R":95000,"1K":110000,"1DK":138000,"1LDK":178000,"2LDK":265000,"3LDK":370000},
+  tokyo_setagaya:{"1R":75000,"1K":88000,"1DK":108000,"1LDK":145000,"2LDK":200000,"3LDK":280000},
+  tokyo_koto:{"1R":70000,"1K":82000,"1DK":100000,"1LDK":132000,"2LDK":182000,"3LDK":250000},
+  tokyo_edogawa:{"1R":62000,"1K":72000,"1DK":88000,"1LDK":115000,"2LDK":158000,"3LDK":215000},
+  tokyo_nerima:{"1R":65000,"1K":75000,"1DK":92000,"1LDK":118000,"2LDK":162000,"3LDK":220000},
+  tokyo_itabashi:{"1R":64000,"1K":74000,"1DK":90000,"1LDK":116000,"2LDK":158000,"3LDK":215000},
+  tokyo_adachi:{"1R":58000,"1K":67000,"1DK":82000,"1LDK":105000,"2LDK":145000,"3LDK":195000},
+  tokyo_sumida:{"1R":70000,"1K":82000,"1DK":100000,"1LDK":132000,"2LDK":180000,"3LDK":248000},
+  tokyo_minato:{"1R":115000,"1K":138000,"1DK":175000,"1LDK":235000,"2LDK":360000,"3LDK":520000},
+  tokyo_ota:{"1R":68000,"1K":80000,"1DK":98000,"1LDK":128000,"2LDK":175000,"3LDK":238000},
+  tokyo_suginami:{"1R":72000,"1K":85000,"1DK":103000,"1LDK":135000,"2LDK":185000,"3LDK":252000},
+  tokyo_nakano:{"1R":70000,"1K":82000,"1DK":100000,"1LDK":130000,"2LDK":178000,"3LDK":240000},
+  yokohama:{"1R":65000,"1K":75000,"1DK":92000,"1LDK":120000,"2LDK":165000,"3LDK":220000},
+  kawasaki:{"1R":68000,"1K":78000,"1DK":95000,"1LDK":125000,"2LDK":170000,"3LDK":225000},
+  sagamihara:{"1R":52000,"1K":60000,"1DK":73000,"1LDK":96000,"2LDK":132000,"3LDK":175000},
+  saitama:{"1R":52000,"1K":60000,"1DK":73000,"1LDK":95000,"2LDK":130000,"3LDK":170000},
+  chiba:{"1R":55000,"1K":63000,"1DK":77000,"1LDK":100000,"2LDK":138000,"3LDK":182000},
+  nagoya:{"1R":45000,"1K":52000,"1DK":63000,"1LDK":82000,"2LDK":110000,"3LDK":145000},
+  hamamatsu:{"1R":35000,"1K":40000,"1DK":50000,"1LDK":64000,"2LDK":85000,"3LDK":112000},
+  shizuoka:{"1R":36000,"1K":42000,"1DK":51000,"1LDK":65000,"2LDK":87000,"3LDK":115000},
+  osaka_city:{"1R":50000,"1K":58000,"1DK":70000,"1LDK":90000,"2LDK":125000,"3LDK":165000},
+  sakai:{"1R":42000,"1K":49000,"1DK":59000,"1LDK":76000,"2LDK":105000,"3LDK":138000},
+  kyoto:{"1R":50000,"1K":58000,"1DK":72000,"1LDK":95000,"2LDK":130000,"3LDK":175000},
+  kobe:{"1R":48000,"1K":55000,"1DK":68000,"1LDK":88000,"2LDK":120000,"3LDK":158000},
+  hiroshima:{"1R":40000,"1K":47000,"1DK":57000,"1LDK":73000,"2LDK":98000,"3LDK":130000},
+  okayama:{"1R":38000,"1K":44000,"1DK":54000,"1LDK":69000,"2LDK":92000,"3LDK":122000},
+  fukuoka:{"1R":42000,"1K":48000,"1DK":58000,"1LDK":75000,"2LDK":102000,"3LDK":138000},
+  kumamoto:{"1R":36000,"1K":42000,"1DK":51000,"1LDK":65000,"2LDK":88000,"3LDK":115000},
+  kagoshima:{"1R":35000,"1K":40000,"1DK":49000,"1LDK":62000,"2LDK":83000,"3LDK":110000},
+  naha:{"1R":35000,"1K":42000,"1DK":52000,"1LDK":68000,"2LDK":90000,"3LDK":118000},
+  _default:{"1R":42000,"1K":50000,"1DK":60000,"1LDK":78000,"2LDK":105000,"3LDK":140000},
+};
+
+const LAYOUTS=["1R","1K","1DK","1LDK","2LDK","3LDK"];
+
+// ============================================================
+// 計算関数
+// ============================================================
+function calcWater(cityId,m3){
+  const r=WATER_DB[cityId]||WATER_DB._default;
+  let w=r.wb,prev=0;
+  for(const t of r.wr){
+    if(m3<=prev)break;
+    const used=Math.min(m3,t.l)-prev;
+    w+=used*t.p;
+    prev=t.l;
+  }
+  const s=r.sb+m3*r.sr;
+  return{water:Math.round(w),sewer:Math.round(s),total:Math.round(w+s)};
+}
+
+function calcElec(plan,kwh){
+  let cost=plan.base+plan.meter*3,rem=kwh,prev=0;
+  for(const t of plan.tiers){
+    if(rem<=0)break;
+    const size=t.lim===Infinity?rem:t.lim-prev;
+    const used=Math.min(rem,size);
+    cost+=used*t.p;
+    rem-=used;prev=t.lim;
+  }
+  return Math.round(cost);
+}
+
+function sortedPlans(region,kwh){
+  const plans=ELECTRIC_PLANS[region]||ELECTRIC_PLANS.kanto;
+  return [...plans].sort((a,b)=>calcElec(a,kwh)-calcElec(b,kwh)).slice(0,3);
+}
+
+function genProps(cityId,layout){
+  const base=(RENT_DB[cityId]||RENT_DB._default)[layout]||60000;
+  const areaBase={"1R":20,"1K":25,"1DK":30,"1LDK":40,"2LDK":55,"3LDK":70}[layout]||30;
+  return[
+    {label:"お手頃物件",rent:Math.round(base*0.88),area:areaBase,age:22,walk:12},
+    {label:"標準物件",rent:Math.round(base*0.97),area:areaBase+3,age:15,walk:8},
+    {label:"築浅物件",rent:Math.round(base*1.08),area:areaBase+5,age:6,walk:5},
+  ].sort((a,b)=>a.rent-b.rent);
+}
+
+// ============================================================
+// Gemini API呼び出し（無料枠・有料化防止）
+// ============================================================
+async function callGemini(apiKey,prompt){
+  if(!canUseAPI(apiKey)){
+    return null; // 上限到達 → null返却
+  }
+  try{
+    incrementApiUsage();
+    const res=await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${encodeURIComponent(apiKey)}`,
+      {method:"POST",headers:{"Content-Type":"application/json"},
+       body:JSON.stringify({contents:[{parts:[{text:prompt}]}],
+         generationConfig:{maxOutputTokens:400,temperature:0.7}})}
+    );
+    const d=await res.json();
+    if(d.error){
+      if(d.error.code===429)return "⚠️ API使用量が一時的な上限に達しました。しばらく待ってから再試行してください。";
+      if(d.error.code===400)return "⚠️ APIキーが無効です。設定を確認してください。";
+      return `⚠️ エラー: ${d.error.message}`;
+    }
+    return d.candidates?.[0]?.content?.parts?.[0]?.text||"（応答なし）";
+  }catch(e){
+    return "（通信エラー：ローカルデータで表示中）";
+  }
+}
+
+// ============================================================
+// React アプリ本体
+// ============================================================
+const{useState,useRef,useEffect,useCallback}=React;
+
+function Meter({label,val,max=100,color="#38bdf8"}){
+  return(
+    <div style={{marginBottom:10}}>
+      <div style={{display:"flex",justifyContent:"space-between",fontSize:13,marginBottom:4,color:"#cbd5e1"}}>
+        <span>{label}</span>
+        <span style={{color,fontWeight:700}}>{val}{max===100?"点":"万円"}</span>
+      </div>
+      <div style={{background:"rgba(255,255,255,0.1)",borderRadius:6,height:7,overflow:"hidden"}}>
+        <div style={{width:`${Math.min((val/max)*100,100)}%`,background:color,height:"100%",borderRadius:6,transition:"width 0.6s ease"}}/>
+      </div>
+    </div>
+  );
+}
+
+function Card({children,style={}}){
+  return(
+    <div className="fade-in" style={{
+      background:"rgba(255,255,255,0.05)",
+      border:"1px solid rgba(255,255,255,0.11)",
+      borderRadius:16,padding:"18px 16px",marginBottom:14,...style
+    }}>{children}</div>
+  );
+}
+
+function TabBtn({label,active,onClick}){
+  return(
+    <button onClick={onClick} style={{
+      flex:1,padding:"9px 2px",borderRadius:10,border:"none",
+      fontWeight:700,fontSize:12,cursor:"pointer",
+      background:active?"linear-gradient(90deg,#0ea5e9,#6366f1)":"rgba(255,255,255,0.07)",
+      color:active?"#fff":"#94a3b8",transition:"all 0.2s"
+    }}>{label}</button>
+  );
+}
+
+function App(){
+  const[search,setSearch]=useState("");
+  const[city,setCity]=useState(null);
+  const[showDD,setShowDD]=useState(false);
+  const[tab,setTab]=useState("water");
+  const[waterM3,setWaterM3]=useState(20);
+  const[kwh,setKwh]=useState(300);
+  const[layout,setLayout]=useState("1K");
+  const[selPlan,setSelPlan]=useState(null);
+  const[apiKey,setApiKey]=useState(()=>localStorage.getItem("gemini_api_key")||"");
+  const[showKeyInput,setShowKeyInput]=useState(false);
+  const[aiText,setAiText]=useState("");
+  const[aiLoading,setAiLoading]=useState(false);
+  const[apiUsed,setApiUsed]=useState(getApiUsageToday);
+  const ddRef=useRef();
+
+  const filtered=search.length>=1
+    ?CITIES.filter(c=>c.name.includes(search)||c.pref.includes(search)).slice(0,10)
+    :[];
+
+  function selectCity(c){setCity(c);setSearch(c.name);setShowDD(false);setAiText("");setSelPlan(null);}
+
+  useEffect(()=>{
+    function handler(e){if(ddRef.current&&!ddRef.current.contains(e.target))setShowDD(false);}
+    document.addEventListener("mousedown",handler);
+    return()=>document.removeEventListener("mousedown",handler);
+  },[]);
+
+  function saveKey(k){
+    localStorage.setItem("gemini_api_key",k);
+    setApiKey(k);
+    setShowKeyInput(false);
+  }
+
+  async function getAiComment(){
+    if(!city)return;
+    const info=CITY_INFO_DB[city.id]||CITY_INFO_DB._default;
+    setAiLoading(true);setAiText("");
+    const prompt=`「${city.name}（${city.pref}）」の生活環境を以下のデータを踏まえ、200字以内で移住・生活者視点から簡潔にまとめてください。利便性${info.conv}点、治安${info.safe}点、物価水準指数${info.price}（全国平均100）、気候：${info.climate}、平均年収${info.salary}万円、生活保護承認率${info.welfare}%。良い点・注意点を含めてください。`;
+    const result=await callGemini(apiKey,prompt);
+    setApiUsed(getApiUsageToday());
+    if(result===null){setAiText("⚠️ 本日のAI利用上限（"+GEMINI_DAILY_LIMIT+"回）に達しました。明日リセットされます。");}
+    else{setAiText(result);}
+    setAiLoading(false);
+  }
+
+  const waterBill=city?calcWater(city.id,waterM3):null;
+  const info=city?(CITY_INFO_DB[city.id]||CITY_INFO_DB._default):null;
+  const rent=city?(RENT_DB[city.id]||RENT_DB._default):null;
+  const plans=city?sortedPlans(city.region,kwh):[];
+  const props=city?genProps(city.id,layout):[];
+  const planBills=plans.map(p=>({plan:p,bill:calcElec(p,kwh)}));
+
+  return(
+    <div style={{minHeight:"100vh",paddingBottom:60}}>
+      {/* ヘッダー */}
+      <div style={{background:"linear-gradient(135deg,#0f2027,#203a43,#2c5364)",padding:"22px 16px 16px",textAlign:"center",borderBottom:"1px solid rgba(255,255,255,0.1)"}}>
+        <div style={{fontSize:22,fontWeight:900,letterSpacing:1,color:"#fff"}}>🏙 生活費シミュレーター</div>
+        <div style={{fontSize:12,color:"rgba(255,255,255,0.65)",marginTop:4}}>水道・電気・賃貸 全国比較（人口10万人以上）</div>
+        <div style={{display:"flex",justifyContent:"center",alignItems:"center",gap:8,marginTop:8,flexWrap:"wrap"}}>
+          <span style={{fontSize:11,color:apiUsed>=GEMINI_DAILY_LIMIT?"#f87171":"#86efac",background:"rgba(0,0,0,0.3)",padding:"3px 10px",borderRadius:20}}>
+            🤖 AI: {apiUsed}/{GEMINI_DAILY_LIMIT}回/日
+          </span>
+          <button onClick={()=>setShowKeyInput(!showKeyInput)} style={{fontSize:11,color:"#94a3b8",background:"rgba(255,255,255,0.1)",border:"none",borderRadius:20,padding:"3px 10px",cursor:"pointer"}}>
+            {apiKey?"🔑 APIキー設定済":"⚙️ APIキー設定"}
+          </button>
+        </div>
+      </div>
+
+      {/* APIキー入力パネル */}
+      {showKeyInput&&(
+        <div style={{background:"rgba(15,23,42,0.95)",borderBottom:"1px solid rgba(99,102,241,0.3)",padding:"14px 16px"}}>
+          <div style={{fontSize:13,color:"#c7d2fe",marginBottom:8,fontWeight:700}}>🔑 Gemini APIキー設定（任意）</div>
+          <div style={{fontSize:11,color:"#64748b",marginBottom:10,lineHeight:1.7}}>
+            Google AI Studio（<span style={{color:"#38bdf8"}}>aistudio.google.com</span>）で無料取得できます。<br/>
+            無料枠：1,500リクエスト/日（クレカ不要）<br/>
+            本アプリは1日{GEMINI_DAILY_LIMIT}回まで使用し、超過時は自動停止します。<br/>
+            ※未設定でもすべての機能（AI以外）は使用可能です。
+          </div>
+          <ApiKeyInput current={apiKey} onSave={saveKey} onCancel={()=>setShowKeyInput(false)}/>
+        </div>
+      )}
+
+      <div style={{maxWidth:640,margin:"0 auto",padding:"16px 12px 0"}}>
+        {/* 都市検索 */}
+        <div ref={ddRef} style={{position:"relative",marginBottom:14}}>
+          <input
+            value={search}
+            onChange={e=>{setSearch(e.target.value);setShowDD(true);}}
+            onFocus={()=>setShowDD(true)}
+            placeholder="🔍 都市名・都道府県名で検索（例：静岡、福岡）"
+            style={{width:"100%",padding:"13px 16px",borderRadius:12,
+              background:"rgba(255,255,255,0.08)",border:"1.5px solid rgba(99,102,241,0.45)",
+              color:"#fff",fontSize:15,outline:"none",boxSizing:"border-box"}}
+          />
+          {showDD&&filtered.length>0&&(
+            <div style={{position:"absolute",top:"100%",left:0,right:0,zIndex:200,
+              background:"#1e293b",border:"1px solid rgba(99,102,241,0.35)",
+              borderRadius:12,marginTop:4,maxHeight:240,overflowY:"auto",
+              boxShadow:"0 12px 40px rgba(0,0,0,0.6)"}}>
+              {filtered.map(c=>(
+                <div key={c.id} onClick={()=>selectCity(c)}
+                  style={{padding:"11px 16px",cursor:"pointer",borderBottom:"1px solid rgba(255,255,255,0.06)",
+                    display:"flex",justifyContent:"space-between",alignItems:"center"}}
+                  onTouchStart={e=>e.currentTarget.style.background="rgba(99,102,241,0.25)"}
+                  onTouchEnd={e=>e.currentTarget.style.background="transparent"}>
+                  <span style={{fontWeight:600}}>{c.name}</span>
+                  <span style={{fontSize:11,color:"#64748b"}}>{c.pref} / {c.pop}万人</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {!city&&(
+          <div style={{textAlign:"center",padding:"50px 0",color:"#475569"}}>
+            <div style={{fontSize:40,marginBottom:12}}>🗾</div>
+            <div style={{fontSize:14}}>都市を検索・選択してください</div>
+            <div style={{fontSize:12,marginTop:6,color:"#334155"}}>人口10万人以上の全国{CITIES.length}都市に対応</div>
+          </div>
+        )}
+
+        {city&&(
+          <>
+            {/* 都市バナー */}
+            <Card style={{background:"linear-gradient(135deg,rgba(14,165,233,0.12),rgba(99,102,241,0.12))",borderColor:"rgba(99,102,241,0.3)"}}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:8}}>
+                <div>
+                  <div style={{fontSize:20,fontWeight:900}}>{city.name}</div>
+                  <div style={{fontSize:12,color:"#94a3b8",marginTop:2}}>{city.pref} ｜ 人口約{city.pop}万人</div>
+                </div>
+                <button onClick={getAiComment} disabled={aiLoading||!canUseAPI(apiKey)}
+                  style={{background:canUseAPI(apiKey)?"linear-gradient(90deg,#6366f1,#0ea5e9)":"rgba(255,255,255,0.1)",
+                    color:"#fff",border:"none",borderRadius:10,padding:"9px 14px",
+                    fontSize:12,fontWeight:700,cursor:canUseAPI(apiKey)?"pointer":"default",
+                    opacity:!apiKey?0.5:1,whiteSpace:"nowrap"}}>
+                  {aiLoading?"分析中…":"✨ AI概要"}
+                </button>
+              </div>
+              {!apiKey&&<div style={{fontSize:11,color:"#64748b",marginTop:8}}>※AI概要にはAPIキー設定が必要です（右上⚙️から無料設定）</div>}
+              {aiText&&(
+                <div style={{marginTop:12,padding:"10px 12px",background:"rgba(99,102,241,0.1)",borderRadius:10,fontSize:13,lineHeight:1.8,color:"#c7d2fe"}}>
+                  🤖 {aiText}
+                </div>
+              )}
+            </Card>
+
+            {/* タブ */}
+            <div style={{display:"flex",gap:6,marginBottom:14}}>
+              <TabBtn label="💧水道" active={tab==="water"} onClick={()=>setTab("water")}/>
+              <TabBtn label="⚡電気" active={tab==="electric"} onClick={()=>setTab("electric")}/>
+              <TabBtn label="🏠賃貸" active={tab==="rent"} onClick={()=>setTab("rent")}/>
+              <TabBtn label="📊地域" active={tab==="info"} onClick={()=>setTab("info")}/>
+            </div>
+
+            {/* ── 水道タブ ── */}
+            {tab==="water"&&(
+              <Card key="water">
+                <div style={{fontWeight:700,fontSize:15,color:"#38bdf8",marginBottom:14}}>💧 上下水道料金シミュレーション</div>
+                <label style={{fontSize:13,color:"#94a3b8"}}>月間使用量：<span style={{color:"#38bdf8",fontWeight:700}}>{waterM3} ㎥</span></label>
+                <input type="range" min={1} max={50} value={waterM3} onChange={e=>setWaterM3(+e.target.value)}
+                  style={{marginTop:8,marginBottom:2,"--thumb-color":"#38bdf8"}}/>
+                <div style={{display:"flex",justifyContent:"space-between",fontSize:11,color:"#475569",marginBottom:14}}>
+                  <span>1㎥（超節水）</span><span>25㎥（4人家族目安）</span><span>50㎥（大家族）</span>
+                </div>
+                <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,marginBottom:14}}>
+                  {[["上水道",waterBill.water,"#38bdf8"],["下水道",waterBill.sewer,"#818cf8"],["合計",waterBill.total,"#f59e0b"]].map(([l,v,c])=>(
+                    <div key={l} style={{background:"rgba(255,255,255,0.05)",borderRadius:12,padding:"12px 8px",textAlign:"center"}}>
+                      <div style={{fontSize:11,color:"#64748b",marginBottom:4}}>{l}</div>
+                      <div style={{fontSize:20,fontWeight:900,color:c}}>{v?.toLocaleString()}<span style={{fontSize:10}}>円</span></div>
+                    </div>
+                  ))}
+                </div>
+                {/* 複数使用量のシミュレーション表 */}
+                <div style={{fontSize:13,fontWeight:700,color:"#94a3b8",marginBottom:8}}>使用量別 料金一覧</div>
+                {[5,10,15,20,25,30,40,50].map(m=>{
+                  const b=calcWater(city.id,m);
+                  return(
+                    <div key={m} style={{display:"flex",justifyContent:"space-between",padding:"6px 0",
+                      borderBottom:"1px solid rgba(255,255,255,0.06)",fontSize:13,
+                      fontWeight:m===waterM3?700:400,color:m===waterM3?"#38bdf8":"#e2e8f0"}}>
+                      <span>{m}㎥/月</span>
+                      <span>上水 {b.water.toLocaleString()}円 ／ 下水 {b.sewer.toLocaleString()}円 ／ <span style={{color:"#f59e0b"}}>計 {b.total.toLocaleString()}円</span></span>
+                    </div>
+                  );
+                })}
+                <div style={{fontSize:11,color:"#475569",marginTop:10,lineHeight:1.7}}>
+                  ※目安：1人暮らし8〜10㎥、2人15〜20㎥、4人25〜35㎥<br/>
+                  ※実際の料金は各自治体公式サイトでご確認ください（概算値）
+                </div>
+              </Card>
+            )}
+
+            {/* ── 電気タブ ── */}
+            {tab==="electric"&&(
+              <Card key="elec">
+                <div style={{fontWeight:700,fontSize:15,color:"#fbbf24",marginBottom:14}}>⚡ 電気料金プラン比較</div>
+                <label style={{fontSize:13,color:"#94a3b8"}}>月間使用量：<span style={{color:"#fbbf24",fontWeight:700}}>{kwh} kWh</span></label>
+                <input type="range" min={50} max={700} step={10} value={kwh} onChange={e=>{setKwh(+e.target.value);setSelPlan(null);}}
+                  style={{marginTop:8,marginBottom:2}}/>
+                <div style={{display:"flex",justifyContent:"space-between",fontSize:11,color:"#475569",marginBottom:14}}>
+                  <span>50kWh</span><span>200kWh（1人）</span><span>400kWh（4人）</span><span>700kWh</span>
+                </div>
+                <div style={{fontSize:13,fontWeight:700,color:"#94a3b8",marginBottom:10}}>💡 安い順 上位3プラン（{kwh}kWh/月）</div>
+                {planBills.map(({plan,bill},i)=>{
+                  const isSel=selPlan===plan;
+                  return(
+                    <div key={i} onClick={()=>setSelPlan(isSel?null:plan)}
+                      style={{background:isSel?"rgba(99,102,241,0.15)":"rgba(255,255,255,0.04)",
+                        border:`1.5px solid ${isSel?"#6366f1":"rgba(255,255,255,0.09)"}`,
+                        borderRadius:12,padding:"13px 14px",marginBottom:10,cursor:"pointer",transition:"all 0.2s"}}>
+                      <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:8}}>
+                        <div style={{flex:1,minWidth:0}}>
+                          <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:4,flexWrap:"wrap"}}>
+                            <span style={{background:i===0?"#f59e0b":i===1?"#6b7280":"#78350f",
+                              color:"#fff",borderRadius:6,padding:"1px 8px",fontSize:11,fontWeight:700,flexShrink:0}}>
+                              {i+1}位
+                            </span>
+                            <span style={{fontWeight:700,fontSize:13}}>{plan.company}</span>
+                          </div>
+                          <div style={{fontSize:12,color:"#94a3b8"}}>{plan.plan}</div>
+                          {plan.note&&<div style={{fontSize:11,color:"#34d399",marginTop:3}}>✓ {plan.note}</div>}
+                          {plan.cashback&&(
+                            <div style={{fontSize:11,color:"#fcd34d",marginTop:3,background:"rgba(251,191,36,0.1)",borderRadius:6,padding:"3px 6px"}}>
+                              🎁 参考：{plan.cashback}
+                            </div>
+                          )}
+                        </div>
+                        <div style={{textAlign:"right",flexShrink:0}}>
+                          <div style={{fontSize:22,fontWeight:900,color:"#fbbf24"}}>{bill.toLocaleString()}<span style={{fontSize:11}}>円/月</span></div>
+                          <div style={{fontSize:10,color:"#475569"}}>基本料{plan.base}円</div>
+                        </div>
+                      </div>
+                      {isSel&&(
+                        <div style={{marginTop:12,paddingTop:12,borderTop:"1px solid rgba(255,255,255,0.1)"}}>
+                          <div style={{fontSize:12,fontWeight:700,color:"#c7d2fe",marginBottom:8}}>📊 使用量別シミュレーション</div>
+                          {[100,150,200,300,400,500,600].map(k=>(
+                            <div key={k} style={{display:"flex",justifyContent:"space-between",padding:"5px 0",
+                              borderBottom:"1px solid rgba(255,255,255,0.05)",fontSize:13,
+                              fontWeight:k===kwh?700:400,color:k===kwh?"#fbbf24":"#e2e8f0"}}>
+                              <span>{k} kWh/月</span>
+                              <span>{calcElec(plan,k).toLocaleString()} 円</span>
+                            </div>
+                          ))}
+                          <div style={{fontSize:11,color:"#475569",marginTop:8,lineHeight:1.7}}>
+                            ※キャッシュバック・割引を除く通常料金体系のみ<br/>
+                            ※実際の申込・料金は各社公式サイトでご確認ください
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+                <div style={{fontSize:11,color:"#475569",lineHeight:1.7}}>
+                  ※概算値。燃料費調整額・再エネ賦課金は別途加算されます
+                </div>
+              </Card>
+            )}
+
+            {/* ── 賃貸タブ ── */}
+            {tab==="rent"&&(
+              <Card key="rent">
+                <div style={{fontWeight:700,fontSize:15,color:"#34d399",marginBottom:14}}>🏠 賃貸相場・物件情報</div>
+                <div style={{display:"flex",flexWrap:"wrap",gap:6,marginBottom:16}}>
+                  {LAYOUTS.map(l=>(
+                    <button key={l} onClick={()=>setLayout(l)}
+                      style={{padding:"7px 14px",borderRadius:8,border:"none",fontWeight:700,cursor:"pointer",fontSize:13,
+                        background:layout===l?"linear-gradient(90deg,#34d399,#0ea5e9)":"rgba(255,255,255,0.07)",
+                        color:layout===l?"#fff":"#94a3b8"}}>
+                      {l}
+                    </button>
+                  ))}
+                </div>
+                {/* 相場一覧 */}
+                <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:7,marginBottom:16}}>
+                  {LAYOUTS.map(l=>(
+                    <div key={l} style={{background:"rgba(255,255,255,0.04)",borderRadius:10,padding:"10px 8px",
+                      textAlign:"center",border:`1px solid ${l===layout?"rgba(52,211,153,0.5)":"rgba(255,255,255,0.08)"}`}}>
+                      <div style={{fontSize:11,color:"#64748b"}}>{l}</div>
+                      <div style={{fontWeight:800,color:l===layout?"#34d399":"#e2e8f0",fontSize:15,marginTop:2}}>
+                        {((rent[l]||0)/10000).toFixed(1)}<span style={{fontSize:10}}>万円</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+                {/* 物件例 */}
+                <div style={{fontSize:13,fontWeight:700,color:"#94a3b8",marginBottom:10}}>🏘 参考物件例（{layout}・安い順3件）</div>
+                {props.map((p,i)=>(
+                  <div key={i} style={{background:"rgba(255,255,255,0.04)",border:"1px solid rgba(255,255,255,0.09)",
+                    borderRadius:12,padding:"12px 14px",marginBottom:10}}>
+                    <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:4}}>
+                      <div>
+                        <span style={{background:["#f59e0b","#6366f1","#475569"][i],color:"#fff",borderRadius:6,
+                          padding:"1px 8px",fontSize:11,fontWeight:700,marginRight:6}}>{i+1}番目</span>
+                        <span style={{fontWeight:700,fontSize:13}}>{p.label}</span>
+                      </div>
+                      <div style={{fontWeight:900,fontSize:19,color:"#34d399"}}>{(p.rent/10000).toFixed(1)}<span style={{fontSize:11}}>万円/月</span></div>
+                    </div>
+                    <div style={{fontSize:12,color:"#64748b",marginTop:6}}>
+                      📐{p.area}㎡ ｜ 🏗築{p.age}年 ｜ 🚶駅徒歩{p.walk}分
+                    </div>
+                  </div>
+                ))}
+                <div style={{fontSize:11,color:"#475569",lineHeight:1.7}}>
+                  ※相場ベースの参考物件です。実際の物件はSUUMO・HOME'S等でご確認ください
+                </div>
+              </Card>
+            )}
+
+            {/* ── 地域情報タブ ── */}
+            {tab==="info"&&info&&(
+              <Card key="info">
+                <div style={{fontWeight:700,fontSize:15,color:"#f472b6",marginBottom:16}}>📊 {city.name} 地域情報</div>
+                <Meter label="🚃 利便性（交通・商業施設）" val={info.conv} color="#38bdf8"/>
+                <Meter label="🛡 治安（犯罪率等から概算）" val={info.safe} color="#34d399"/>
+                <Meter label="💴 物価水準（全国平均=100）" val={info.price} max={160} color="#f59e0b"/>
+                <div style={{height:1,background:"rgba(255,255,255,0.08)",margin:"14px 0"}}/>
+                <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:14}}>
+                  <div style={{background:"rgba(255,255,255,0.04)",borderRadius:12,padding:"12px",textAlign:"center"}}>
+                    <div style={{fontSize:11,color:"#64748b",marginBottom:4}}>🌤 気候</div>
+                    <div style={{fontWeight:700,fontSize:12,lineHeight:1.5}}>{info.climate}</div>
+                  </div>
+                  <div style={{background:"rgba(255,255,255,0.04)",borderRadius:12,padding:"12px",textAlign:"center"}}>
+                    <div style={{fontSize:11,color:"#64748b",marginBottom:4}}>💼 平均年収（概算）</div>
+                    <div style={{fontWeight:900,fontSize:22,color:"#fbbf24"}}>{info.salary}<span style={{fontSize:11}}>万円</span></div>
+                  </div>
+                </div>
+                {/* 生活保護承認率 */}
+                <div style={{background:"rgba(248,113,113,0.08)",border:"1px solid rgba(248,113,113,0.25)",borderRadius:12,padding:"14px"}}>
+                  <div style={{fontWeight:700,fontSize:13,color:"#f87171",marginBottom:8}}>📋 生活保護 申請承認率（概算）</div>
+                  <div style={{display:"flex",alignItems:"center",gap:14}}>
+                    <div style={{fontSize:38,fontWeight:900,color:"#f87171",flexShrink:0}}>
+                      {info.welfare}<span style={{fontSize:15}}>%</span>
+                    </div>
+                    <div>
+                      <div style={{background:"rgba(255,255,255,0.08)",borderRadius:6,height:8,overflow:"hidden",marginBottom:6}}>
+                        <div style={{width:`${info.welfare}%`,background:"linear-gradient(90deg,#f87171,#fb923c)",height:"100%",transition:"width 0.6s"}}/>
+                      </div>
+                      <div style={{fontSize:11,color:"#64748b",lineHeight:1.7}}>
+                        ※厚生労働省統計・各自治体公表データに基づく概算値<br/>
+                        実際の承認率は世帯状況・時期により異なります
+                      </div>
+                    </div>
+                  </div>
+                </div>
+                <div style={{fontSize:11,color:"#334155",marginTop:10,lineHeight:1.6}}>
+                  ※各指標は公開統計・調査データに基づく参考値です
+                </div>
+              </Card>
+            )}
+          </>
+        )}
+
+        {/* フッター */}
+        <div style={{textAlign:"center",fontSize:11,color:"#334155",marginTop:20,lineHeight:2,padding:"0 4px"}}>
+          本ツールはすべて完全無料で動作します。<br/>
+          AI機能（Gemini API）: 無料枠1日{GEMINI_DAILY_LIMIT}回制限・超過時自動停止。有料課金は一切行いません。<br/>
+          データは公開情報ベースの概算値です。正確な情報は各機関でご確認ください。
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// APIキー入力コンポーネント（分離）
+function ApiKeyInput({current,onSave,onCancel}){
+  const[val,setVal]=React.useState(current||"");
+  return(
+    <div>
+      <input value={val} onChange={e=>setVal(e.target.value)}
+        placeholder="AIzaSy... （Google AI Studioで無料取得）"
+        type="password"
+        style={{width:"100%",padding:"10px 12px",borderRadius:10,boxSizing:"border-box",
+          background:"rgba(255,255,255,0.07)",border:"1px solid rgba(99,102,241,0.4)",
+          color:"#fff",fontSize:13,outline:"none",marginBottom:8}}/>
+      <div style={{display:"flex",gap:8}}>
+        <button onClick={()=>onSave(val)}
+          style={{flex:1,padding:"9px",background:"linear-gradient(90deg,#6366f1,#0ea5e9)",
+            color:"#fff",border:"none",borderRadius:8,fontWeight:700,cursor:"pointer",fontSize:13}}>
+          保存
+        </button>
+        <button onClick={onCancel}
+          style={{flex:1,padding:"9px",background:"rgba(255,255,255,0.07)",
+            color:"#94a3b8",border:"none",borderRadius:8,fontWeight:700,cursor:"pointer",fontSize:13}}>
+          キャンセル
+        </button>
+        {current&&(
+          <button onClick={()=>onSave("")}
+            style={{padding:"9px 14px",background:"rgba(248,113,113,0.15)",
+              color:"#f87171",border:"none",borderRadius:8,fontWeight:700,cursor:"pointer",fontSize:13}}>
+            削除
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+</script>
+</body>
+</html>
